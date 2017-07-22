@@ -23,13 +23,27 @@ You may need to restart your shell for this to take effect.
 
 Usage:
 ```
-    sphpf 54
-    sphpf 55
-    sphpf 56
-    sphpf 70
+    #: sphpf 54
+    #: sphpf 55
+    #: sphpf 56
+    #: sphpf 70
 ```
 
+## Troubleshooting
+
+You can enable debug output simply setting `DEBUG` to true.
+
+Example, enable for a single run:
+
+    #: DEBUG=1 sphpf 70
+    ...
+
+Example, enable for the current shell:
+
+    #: export DEBUG=1
+    #: sphpf 70
+    ...
 
 ## Thanks to
 
-* Initial `sphp` by sgotre can be found at [sgotre/sphp-osx](https://github.com/sgotre/sphp-osx) 
+* Initial `sphp` by sgotre which inspired this script can be found at [sgotre/sphp-osx](https://github.com/sgotre/sphp-osx) 
