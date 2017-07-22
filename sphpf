@@ -1,93 +1,101 @@
-#!/bin/bash
+#!/bin/sh
+
+if [ ! -z "$DEBUG" ]; then
+    function dbg() { echo $1; };
+else
+    function dbg() { return; };
+fi
 
 # Check if command was ran as root.
-if [[ $(id -u) -eq 0 ]]; then
-    echo "The command \"sphp\" should not be executed as root or via sudo directly."
-    echo "When a service requires root access, you will be prompted for a password as needed."
-    exit 1
+if [ $(id -u) -eq 0 ]; then
+    echo "The command $(basename $0) should *not be executed as root* or using sudo." 1>&2
+    echo "When a service requires root access, you will be prompted for a password as needed." 1>&2
+    exit -1
 fi
 
-# Usage
+# Print usage
 if [ $# -ne 1 ]; then
-    echo "Usage: sphp [phpversion]"
-    echo "Versions installed:"
-    brew list | grep '^php[0-9]\{2,\}$' | grep -o -E '[0-9]+' | while read -r line ; do
-        echo " - phpversion: $line"
+    echo "Usage: $(basename $0) [phpversion]"
+    
+    echo "Available PHP versions:"
+    for ver_num in $(brew list | grep '^php[0-9]\{2,\}$' | grep -o -E '[0-9]+'); do
+        echo " - $ver_num"
     done
-    exit 1
+    exit -2
 fi
 
-currentversion="`php -r \"error_reporting(0); echo str_replace('.', '', substr(phpversion(), 0, 3));\"`"
-newversion="$1"
+CURRENT_FPM=$(launchctl list | grep php | awk -F'[^0-9]*' '{print $3}')
+NEW_FPM="$1"
 
-majorOld=${currentversion:0:1}
-majorNew=${newversion:0:1}
-minorNew=${newversion:1:1}
+# Check if a version is loaded
+if [ -z "$CURRENT_FPM" ]; then
+    echo "\nWARNING: No current php version loaded" 1>&2
 
-brew list php$newversion 2> /dev/null > /dev/null
+# Check if new version is already the current version.
+elif [ "$CURRENT_FPM" = "$NEW_FPM" ]; then
+    echo "NOTICE: PHP version $NEW_FPM already active."
+    while true; do
+        read -r -p "Continue anyway? (y/n) " yn
+        case $yn in
+            [Yy]* ) echo && break;;
+            [Nn]* ) echo && exit 0;;
+        esac
+    done
 
-if [ $? -eq 0 ]; then
-    echo "PHP version $newversion found"
-
-    # Check if new version is already the current version.
-    if [ "${newversion}" == "${currentversion}" ]; then
-        echo -n "PHP version ${newversion} is already being used. Continue by reloading? (y/n) "
-        while true; do
-            read -n 1 yn
-            case $yn in
-                [Yy]* ) echo && break;;
-                [Nn]* ) echo && exit 1;;
-            esac
-        done
-    fi
-
-    echo "Unlinking old binaries..."
-    brew unlink php$currentversion 2> /dev/null > /dev/null
-
-    echo "Linking new binaries..."
-    brew link php$newversion
-
-    echo "Linking new modphp addon..."
-    sudo ln -sf `brew list php$newversion | grep libphp` /usr/local/lib/libphp${majorNew}.so
-
-    echo "Fixing LoadModule..."
-    apacheConf=`httpd -V | grep -i server_config_file | cut -d '"' -f 2`
-    sudo sed -i -e "/LoadModule php${majorOld}_module/s/^#*/#/" $apacheConf
-
-    if grep "LoadModule php${majorNew}_module .*php${newversion}" $apacheConf > /dev/null
-    then 
-        sudo sed -i -e "/LoadModule php${majorNew}_module .*php${newversion}/s/^#//" $apacheConf
-    else
-        sudo sed -i -e "/LoadModule php${majorNew}_module/s/^#//" $apacheConf
-    fi
-
-
-    echo "Updating version file..."
-
-    pgrep -f /usr/sbin/httpd 2> /dev/null > /dev/null
-    if [ $? -eq 0 ]; then
-        echo "Restarting system Apache..."
-        sudo pkill -9 -f /usr/sbin/httpd
-        sudo /usr/sbin/apachectl -k restart > /dev/null 2>&1
-    fi
-    pgrep -f /usr/local/Cellar/*/httpd 2> /dev/null > /dev/null
-    if [ $? -eq 0 ]; then
-        echo "Restarting homebrew Apache..."
-        sudo pkill -9 -f /usr/local/Cellar/*/httpd
-        sudo /usr/local/bin/apachectl -k restart > /dev/null 2>&1
-    fi
-    pgrep -x httpd 2> /dev/null > /dev/null
-    if [ $? -eq 0 ]; then
-        echo "Restarting non-root homebrew Apache..."
-        httpd -k restart > /dev/null 2>&1
-    fi
-
-    echo "Done."
-
-    # Show PHP CLI version for verification.
-    echo && php -v
 else
-    echo "PHP version $majorNew.$minorNew was not found."
-    echo "Try \`brew install php${newversion}\` first."
-    exit 1
+    dbg "Attempting to swap between php$CURRENT_FPM and php$NEW_FPM"
+fi
+
+# Check if the required version exists
+brew list php$NEW_FPM >/dev/null 2>&1
+if [ $? -eq 0 ]; then
+    LAUNCHAGENTS_DIR="/Users/$(id -u -n)/Library/LaunchAgents"
+
+    CUR_PLIST_NAME="homebrew.mxcl.php$CURRENT_FPM.plist"
+    NEW_PLIST_NAME="homebrew.mxcl.php$NEW_FPM.plist"
+
+    CUR_PLIST_LINK="$LAUNCHAGENTS_DIR/$CUR_PLIST_NAME"
+    NEW_PLIST_LINK="$LAUNCHAGENTS_DIR/$NEW_PLIST_NAME"
+    NEW_PLIST_FILE="/usr/local/opt/php$NEW_FPM/$NEW_PLIST_NAME"
+
+    # Exit if the new LaunchAgent is not available
+    if [ ! -f "$NEW_PLIST_FILE" ]; then
+        echo "\nERROR: Missing php-fpm launchtl file for version: $NEW_FPM" 1>&2
+        exit -2;
+    fi
+    
+    # To prevent issues only act if the LaunchAgent is a Symlink
+    if [ -e "$CUR_PLIST_LINK" -a ! -L "$CUR_PLIST_LINK" ]; then
+        echo "\nERROR: Current LaunchAgent is not a Symlink aborting as saefty measure." 1>&2
+        echo "Please make sure that php-fpm LaunchAgents are symlinks to the brew-generated files."
+        echo "LaunchAgent plist file is: $CUR_PLIST_LINK"
+        exit -3;
+    fi
+
+    # Unload current LaunchAgent (if any)
+    if [ ! -z "$CURRENT_FPM" ]; then
+        dbg "Unloading php-fpm $CURRENT_FPM service."
+        launchctl unload -w "$CUR_PLIST_LINK"
+    fi
+
+    if [ -e "$CUR_PLIST_LINK" ]; then
+        dbg "Unlinking old LaunchAgent"
+        /bin/rm "$CUR_PLIST_LINK"
+    fi
+
+    # Link new Agent 
+    dbg "Linking new LaunchAgent"
+    /bin/ln -s "$NEW_PLIST_FILE" "$NEW_PLIST_LINK"
+
+    # Load new PHP-FPM agent
+    dbg "Loading php-fpm $FPM_NEW service"
+    launchctl load -w "$NEW_PLIST_LINK"
+
+    dbg "Open http://localhost/ and verify that the fpm version is successfully changed"
+    echo "All Done!"
+
+else
+    echo "PHP version $NEW_FPM was not found." >&2
+    echo "Try installing it: brew install php$NEW_FPM" >&2
+    exit -10
 fi
